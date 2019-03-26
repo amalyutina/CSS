@@ -1,0 +1,470 @@
+---
+title: "calculation of drug sensitivity scores (DSS) for single drugs and combination sensitivity scores (CSS) for drug combinations"
+---
+
+---
+libraries needed for the execution of code
+---
+
+```{r}
+
+library( dplyr )
+library( tidyr )
+library( plyr )
+library( tibble )
+library( readr )
+library( stringr )
+library( ggplot2 )
+library(drc)
+
+```
+
+
+---
+function that calculates sensitivity score (DSS for single drug experiments, CSS1 and CSS2 for combination drug experiments)
+---
+
+```{r}
+
+get.sensitivity.score <- function( ic50, slope, max, minConcTested, maxConcTested, y=10, concnScale=1e-9 ){
+  #imput data should be a tibble/data.frame containing ic50, slope, max (maximum inhibition value obtained for the drug),       minConcTested (minimum drug concentration tested), maxConcTested (maximum drug concentration tested)
+  #this tibble is obtained using get.curve.data function
+  #y is a minimum activity level, set to 10%
+  #concnScale is a scaling factor for the drug concentrations when calculating sensitivity score, set to 1e-9
+  #get.sensitivity.score function is called inside get.curve.data function
+  
+  yMax <- as.numeric( unname( max ) ) 
+  lambda <- as.numeric( unname( slope ) )
+  yMin <- 0 #minimum response level is set to 0
+  ic50 <- as.numeric( unname( ic50 ) )
+  minConcTested <- as.numeric( unname( minConcTested ) )
+  maxConcTested <- as.numeric( unname( maxConcTested ) )
+  minConc <- log10( minConcTested*concnScale ) #
+  maxConc <- maxConcTested
+  c2 <- log10( maxConc*concnScale )  
+  
+  #set the log10 concentration range [c1, c2] for the drug tested in the experiment and calculate sensitivity score
+  if( is.na( ic50 ) || is.na( lambda ) || is.na( yMax ) || is.na( minConc ) || is.na( maxConc ) ){
+    sensitivityScore <- NA
+  }
+  else if( isTRUE( ic50 >= maxConc ) ){
+    sensitivityScore <- 0
+  }
+  else if( isTRUE( lambda == 0 ) ){
+    sensitivityScore <- 0
+  }
+  else{
+    if( yMax > 100 ){ yMax <- 100  }
+    if( isTRUE( lambda < 0 ) ){ lambda <--lambda  }
+    ic50Scaled <- log10( ic50*concnScale )
+    if( yMax > y ){
+      if( y != 0 ){
+        c1 <- ( ic50Scaled - ( ( log( yMax - y ) - log( y - yMin ) )/( lambda*log( 10 ) ) ) )
+        if( isTRUE( c1 < minConc ) ){ c1 <- minConc }
+        else if( isTRUE( c1 > c2 ) ){ c1 <- c2 }
+      }
+      else { c1 <- minConc }
+      
+      # y = yMin + ( yMax - yMin )/( 1 + 10^( lambda*( ic50Scaled - x ) ) )
+      #inverse function
+      # x = ic50Scaled - ( ( log( yMax - y ) - log( yMin - y ) )/( lambda*log(10) ) )
+      
+      intY <- ( ( ( ( (  yMax - yMin )*log( 1 + 10^( lambda*( ic50Scaled - c2 ) ) ) )/( lambda*log( 10 ) ) ) +  yMax*c2 ) - ( ( ( (  yMax - yMin )*log( 1 + 10^( lambda*( ic50Scaled - c1 ) ) ) )/( lambda*log( 10 ) ) ) +  yMax*c1 ) ) - ( y*( c2 - c1 ) )
+      
+      totalArea <- ( c2 - minConc )*( 100 - y )
+      normArea <- ( ( intY/totalArea )*100 )/log10( yMax )#DSS2 #AUC1
+      if(isTRUE( normArea > 50 ) ) { normArea <- 0}  
+      
+      if( isTRUE( normArea < 0 | normArea > 100 ) ){
+        sensitivityScore <- 0
+      } else{
+        sensitivityScore <- round( normArea, digits = 4 ) }
+    } else { sensitivityScore <- 0 } 
+  } 
+  return ( sensitivityScore )
+}
+
+```
+
+
+---
+function to obtain curve characteristics needed for sensitivity score calculations and to save those and the score to a table
+---
+
+```{r}
+
+get.curve.data <- function( tbl ){
+#input data should be a tibble/data.frame containing drug, dose, inhibition (in percentage), name (e.g. some id for the selected experiment) columns
+ 
+  tbl <-
+    tbl %>%
+    dplyr::select( drug, dose, inhibition, name )
+  
+  matTbl <- data.frame( inhibition=tbl$inhibition, dose=tbl$dose, logconc = log10( tbl$dose ) )
+  matTbl <- matTbl[ order( matTbl[,"dose"] ), ]	
+ 
+# use general model fitting function to obtain curve charatceristics ( slope, min, max, ic50 )
+  estimateParam <- tryCatch( { drc::drm( inhibition ~ logconc, data = matTbl, fct = drc::LL.4( fixed = c( NA, NA, NA,NA ), names = c( "slope", "min", "max", "ic50" ) ),logDose=10,control = drc::drmc( errorm = FALSE ) ) }, 
+                             warning = function(w){ drc::drm( inhibition ~ logconc, data = matTbl, fct = drc::L.4( fixed = c( NA, NA, NA,NA ), names = c( "slope", "min" ,"max" ,"ic50" ) ), logDose=10 ) },
+                             error = function(e){ drc::drm( inhibition ~ logconc, data = matTbl, fct = drc::L.4( fixed = c( NA, NA, NA,NA ), names = c( "slope", "min", "max", "ic50" ) ),logDose=10 ) } )
+  
+  #extract and name coefficients
+  coefEstim <- coef( estimateParam ); names( coefEstim ) <- c( "slope", "min", "max", "ic50" )
+  
+  # see http://www.ncbi.nlm.nih.gov/pmc/articles/PMC4696819/
+  coefEstim["slope"] <- coefEstim["slope"]*-1 
+  
+  # if curve decreases or ic50 is higher than max (i.e. ic50 is "outlier"), set ic50 to max concentration
+  coefEstim["ic50"] <- ifelse( coefEstim["max"] <= coefEstim["min"] | coefEstim["ic50"] > max( matTbl$dose, na.rm=TRUE ), max( matTbl$dose, na.rm=TRUE ), coefEstim["ic50"] )
+ 
+  # if ic50 is less than 0 set it to min concentration and if even min concentration < 0, then set ic50 to mean of all concentrations
+  coefEstim["ic50"] <- ifelse( coefEstim["ic50"] < 0,min( matTbl$dose, na.rm=TRUE ), coefEstim["ic50"] )
+  coefEstim["ic50"] <- ifelse( coefEstim["ic50"] < 0,mean( matTbl$dose,na.rm=TRUE ), coefEstim["ic50"] )
+ 
+   # similar to previous step but now compare log10(ic50) with log(min concentration).
+  coefEstim["ic50"] <- log10( coefEstim["ic50"] )
+  coefEstim["ic50"] <- ifelse( coefEstim["ic50"] < min( matTbl$logconc ),max( matTbl$logconc ), coefEstim["ic50"] )
+  
+  # if all inhib. < 0 set ic50 to max concentration
+  coefEstim["ic50"] <- ifelse( all( matTbl$inhibition < 0 ), max( matTbl$logconc, na.rm=TRUE ), coefEstim["ic50"] )
+  
+  coefEstim["min"] <- 0; coefEstim["max"] <- max( matTbl$inhibition, na.rm=TRUE )
+  
+
+  minLower <- ifelse( min( matTbl$inhibition, na.rm=TRUE ) > 0,min( matTbl$inhibition, na.rm=TRUE ), 0 )
+  minLower <- ifelse( minLower >= 100,99, minLower )
+  coefEstim["max"] <- ifelse( coefEstim["max"] > 100, 100, coefEstim["max"] )
+  coefEstim["max"] <- ifelse( coefEstim["max"] < 0, 100, coefEstim["max"] )
+  
+  #maxLower and maxUpper - lower and upper bounds for 'nl2sol' algorithm in nonlinear least-squares
+  maxLower <- ifelse( max(matTbl$inhibition, na.rm=TRUE ) > 100, coefEstim["max"], max( matTbl$inhibition,na.rm=TRUE))
+  maxLower <- ifelse( maxLower < 0, coefEstim["max"], max( matTbl$inhibition, na.rm=TRUE ) )
+  maxLower <- ifelse( maxLower < 0, 0, maxLower )
+  maxLower <- ifelse( maxLower > 100, 100, maxLower )
+  
+  #adjust upper maximum for negative slopes
+  runAvg <- caTools::runmean( matTbl$inhibition, 10 )
+  maxUpper <- ifelse( any( runAvg[-nrow( matTbl )] > runAvg[ nrow( matTbl ) ] ), max( matTbl$inhibition[ runAvg > runAvg[ nrow( matTbl ) ] ] ), coefEstim["max"] )
+  maxUpper <- ifelse( any( matTbl$inhibition > maxUpper ), mean( matTbl$inhibition[ matTbl$inhibition > maxUpper ] ) + 5, maxUpper )
+  maxUpper <- ifelse( maxUpper < 0, coefEstim["max"], maxUpper)
+  maxUpper <- ifelse( maxUpper > 100, 100, maxUpper ) 
+  maxUpper <- ifelse( maxLower > maxUpper, coefEstim["max"], maxUpper )
+
+  meanInhLast <- mean( matTbl$inhibition[4:5], na.rm=TRUE )
+  if( meanInhLast < 60 ) 
+  { if( meanInhLast > 25 )
+    coefEstim["ic50"] <- mean( matTbl$logconc, na.rm=TRUE )
+  else if( meanInhLast < 25 )
+    coefEstim["ic50"] <- max( matTbl$logconc, na.rm=TRUE ) }
+  if( mean( matTbl$inhibition[1:3], na.rm=TRUE ) < 5 ) 
+    coefEstim["ic50"] <- max(matTbl$logconc, na.rm=TRUE )
+  
+  #add some positive noise to max if it is the same as min. 
+  if( unname( coefEstim["min"] ) == unname( coefEstim["max"] ) ) 
+    coefEstim["max"] <- coefEstim["max"] + 0.001
+  
+  #adaptive nonlinear Least-Squares algorithm NL2SOL to estimate parameters.
+  nlsResultIc50 <- tryCatch( {
+    nls( inhibition ~ min + ( max - min )/ ( 1 + ( 10^( slope * ( ic50 - logconc) ) ) ), data = matTbl, algorithm = "port", 
+        start = list( slope = 1, min = unname( coefEstim["min"] ), max = unname( coefEstim["max"] ), ic50 = unname( coefEstim["ic50"] ) ),
+        lower = list( slope = 0, min = 0, max = maxLower, ic50 = min( matTbl$logconc ) ),
+        upper = list( slope = 2.5, min = 0, max = maxUpper, ic50 = max( matTbl$logconc ) ),
+        control = list( warnOnly = TRUE, minFactor = 1/2048 ) )
+  }, error = function(e) {
+    
+    minpack.lm::nlsLM( inhibition ~ min + ( max - min )/( 1 + ( 10^( slope * ( ic50 - logconc ) ) ) ), data = matTbl,
+                      start = list( slope = 1, min = unname( coefEstim["min"] ), max = unname( coefEstim["max"] ), ic50 = unname( coefEstim["ic50"] ) ),
+                      lower = c( slope = 0.5, min = minLower, max = 100,	ic50 = min( matTbl$logconc ) ),
+                      upper = c( slope = 2.5, min = coefEstim["min"], max = 100, ic50 = max( matTbl$logconc ) ) )
+  } )
+  
+  #if slope <= 0.2, decrease ic50, change lower bound for slope to 0.1 and repeat.
+  if( coef( nlsResultIc50 ) ["slope"] <= 0.2 )
+  {
+    if( meanInhLast > 60 )
+      coefEstim["ic50"] <- min( matTbl$logconc, na.rm=TRUE )
+    nlsResultIc50 <- nls( inhibition ~ min + ( max - min )/ ( 1 + ( 10^( slope * ( ic50 - logconc ) ) ) ), data = matTbl, algorithm = "port",
+                           start = list( slope = 1, min = unname( coefEstim["min"] ), max = unname( coefEstim["max"] ), ic50 = unname( coefEstim["ic50"] ) ),
+                           lower = list( slope = 0.1, min = minLower, max = maxLower, ic50 = min( matTbl$logconc ) ),
+                           upper = list( slope = 2.5, min = 0, max = maxUpper, ic50 = max( matTbl$logconc ) ),
+                           control = list( warnOnly = TRUE, minFactor = 1/2048 ) )
+  }
+  maxSignal <- max( matTbl$dose, na.rm = TRUE )
+  minSignal <- min( matTbl$dose, na.rm = TRUE )
+  
+  #prepare final data and convert ic50 back from log scale (inverse)
+  coefIc50 <- coef( nlsResultIc50 )[ c( "ic50", "slope", "max", "min" ) ] 
+  coefIc50["ic50"] <- 10^coefIc50["ic50"]
+  
+  #adjust ic50 for curves in wrong direction
+  coefIc50["ic50"] <- ifelse( coefIc50["slope"] < 0, maxSignal, coefIc50["ic50"] )
+  coefIc50["ic50"] <- ifelse( coefIc50["max"] < 0, maxSignal, coefIc50["ic50"] )
+  coefIc50["ic50"] <- ifelse( coefIc50["max"] < 10, maxSignal, coefIc50["ic50"] )
+  coefIc50["max"] <- ifelse( coefIc50["max"] < 0, 0, coefIc50["max"] )
+  coefIc50["ic50"] <- ifelse( all( c( max( matTbl$inhibition, na.rm=TRUE ), min( matTbl$inhibition, na.rm=TRUE ) ) > 50 ), minSignal, coefIc50["ic50"] )
+  
+  #Calculate the standard error scores
+  sumic50 <- summary( nlsResultIc50 )
+  ic50StdError <- sumic50$coefficients[ "ic50", "Std. Error" ]
+  ic50StdResid <- round( sqrt( sum( ( sumic50$residuals )^2 )/( length( sumic50$residuals ) - 1 ) ), 2 )
+  
+  #get sensitivity score
+  sensitivityScore <- get.sensitivity.score( coefIc50["ic50"], coefIc50["slope"], coefIc50["max"], minSignal, maxSignal )
+
+  res <- data.frame( name =  unique( tbl$name ), ic50 = coefIc50["ic50"], sensitivityScore = sensitivityScore,  stringsAsFactors = FALSE )
+  
+}
+
+
+```
+
+
+---
+function that finds the background drug dose closest to its ic50 that was obtained using single drug experiment
+---
+
+```{r}
+
+get.closest.to.ic50 <- function( tbl ){
+  #input data should be a tibble/data.frame containing backgroundDose (concentrations of the background drug) and ic50Single (ic50 obtained for that drug in a single drug experiment)
+  
+  tbl_init <- tbl
+  
+  tbl <-
+    tbl %>%
+    dplyr::select( backgroundDose, ic50Single ) %>%
+    distinct()
+  
+  ind <- which.min( abs( as.vector( tbl$backgroundDose ) - as.vector( unique( tbl$ic50Single ) ) ) )
+  
+  if ( ind == nrow( tbl ) ) { #if the last background drug concentration was selected to be closest to ic50 - take the one before
+    res <- tbl[ ( ind -1 ), ]
+  } else {
+  if ( ind == 1 ) { #if the first background drug concentration was selected to be closest to ic50 - take the one after
+    res <- tbl[ ( ind +1 ), ]
+  } else {
+    res <- tbl[ind, ]
+  }
+  }
+  
+selectedDose <- as.numeric( res$backgroundDose )
+
+ res <-
+   tbl_init %>%
+   filter( backgroundDose == selectedDose )
+   
+  res
+  
+}
+
+```
+
+
+---
+read drug data from a single drug experiment and obtain inhibition values
+---
+
+```{r}
+
+#download data from file
+load(file = "single_drug_data.RData")
+
+#make sure valuability values are numeric
+singleDrug <- 
+  singleDrug %>%
+  mutate_at( vars( contains( 'viability' ) ), list( ~ as.numeric ) ) 
+
+#obtain mean viability response values over replicates and calculate inhibition values
+singleDrug <- 
+  singleDrug %>%
+  mutate( viability = rowMeans( dplyr::select( singleDrug, contains( 'viability' ) ), na.rm = TRUE ) ) %>%
+  group_by( cellLine, drug, dose ) %>%
+  dplyr::summarise( viability = mean( viability ) ) %>%
+  ungroup() %>%
+  mutate( inhibition = ( 1 - viability )*100 ) %>% # inhibition values in percentage
+  mutate( name = paste( cellLine, drug, sep = '_' ) ) %>%
+  dplyr::select( name, cellLine, drug, dose, inhibition )
+
+```
+
+
+---
+calculate DSS for drugs from single drug experiment
+---
+
+```{r}
+
+datalist <- list()
+cellLines <- unique( singleDrug$cellLine )
+
+for ( i in 1:length( cellLines ) ) {
+  
+  datalist[[i]] <-
+    singleDrug %>%
+    filter( cellLine == cellLines[i] )%>%
+    group_by( drug ) %>%
+    do( { get.curve.data(.) } ) %>%
+    ungroup() %>%
+    mutate( cellLine = cellLines[i] ) %>%
+    dplyr::select( name, cellLine, everything() )
+  
+  dssData <- dplyr::bind_rows( datalist )
+  
+}
+
+```
+
+
+---
+read drug data from a combination drug experiment and obtain inhibition values
+---
+
+```{r}
+
+#download data from file
+load( file = "combo_drug_data.RData" )
+
+#make sure valuability values are numeric
+comboDrug <- 
+  comboDrug %>%
+   mutate_at( vars( contains( 'viability' ) ), list( ~ as.numeric ) )
+
+#obtain mean viability response values over replicates and calculate inhibition values
+comboDrug <- 
+  comboDrug %>%
+  mutate( viability = rowMeans( dplyr::select( comboDrug,contains( 'viability' ) ), na.rm = TRUE ) ) %>%
+  group_by( cellLine, drugA, drugADose, drugB, drugBDose ) %>%
+  dplyr::summarise( viability = mean( viability ) ) %>%
+  ungroup() %>%
+  mutate( inhibition = ( 1 - viability )*100 ) %>% # inhibition values in percentage
+  dplyr::select( cellLine, drugA, drugADose, drugB, drugBDose, inhibition )
+
+```
+
+
+---
+find the background drug dose closest to its ic50 that was obtained using single drug experiment
+---
+
+```{r}
+
+cellLines <- unique( comboDrug$cellLine )
+
+# case 1 drugA - background drug, drugB - foreground drug
+comboDrugBackgroundA <-
+  comboDrug %>%
+  mutate( name = paste( cellLine, paste( drugB, paste( drugA,'_background_',drugADose, sep ='' ), sep= '_' ), sep = '_' ) ) %>%
+  dplyr::select( name, everything() )
+
+colnames( comboDrugBackgroundA )[ c( 3:6 ) ] <- c( 'backgroundDrug', 'backgroundDose', 'drug', 'dose' )
+
+
+comboDrugBackgroundA <- 
+  comboDrugBackgroundA %>%
+  left_join( dssData, by = c( "backgroundDrug" = "drug", "cellLine" = "cellLine" ), suffix = c( "", "Single" ) ) %>%
+  dplyr::rename( ic50Single = ic50, sensitivityScoreSingle = sensitivityScore )
+
+
+comboDrugBackgroundA <-
+  comboDrugBackgroundA %>%
+  group_by_( 'backgroundDrug', 'cellLine', 'drug' ) %>%
+  do( { get.closest.to.ic50(.) } ) %>%
+  dplyr::select( -contains( 'Single' ) ) %>%
+  ungroup()
+
+
+# case 2 drugB - background drug, drugA - foreground drug
+comboDrugBackgroundB <-
+  comboDrug %>%
+  mutate( name = paste( cellLine, paste( drugA, paste( drugB,'_background_',drugBDose, sep ='' ), sep= '_' ), sep = '_' ) ) %>%
+  dplyr::select( name, everything() )
+
+colnames( comboDrugBackgroundB )[ c( 3:6 ) ] <- c( 'drug', 'dose', 'backgroundDrug', 'backgroundDose' )
+
+comboDrugBackgroundB <-
+  comboDrugBackgroundB %>%
+  dplyr::select( cellLine, backgroundDrug, backgroundDose, drug, dose, everything() )
+
+
+comboDrugBackgroundB <- 
+  comboDrugBackgroundB %>%
+  left_join( dssData, by = c( "backgroundDrug" = "drug", "cellLine" = "cellLine" ), suffix = c( "", "Single" ) ) %>%
+  dplyr::rename( ic50Single = ic50, sensitivityScoreSingle = sensitivityScore )
+
+
+comboDrugBackgroundB <-
+  comboDrugBackgroundB %>%
+  group_by_( 'backgroundDrug', 'cellLine', 'drug' ) %>%
+  do( { get.closest.to.ic50(.) } ) %>%
+  dplyr::select( -contains( 'Single' ) ) %>%
+  ungroup()
+
+```
+
+
+---
+calculate CSS1 and CSS2 for drugs from combination drug experiment
+---
+
+```{r}
+
+# case 1 drugA - background drug, drugB - foreground drug
+datalist = list()
+for ( i in 1:length( cellLines ) ) {
+
+  datalist[[i]] <-
+   comboDrugBackgroundA %>%
+    filter( cellLine == cellLines[i] )%>%
+    group_by( backgroundDrug, backgroundDose, drug ) %>%
+    do( { get.curve.data(.) } ) %>%
+    ungroup() %>%
+    mutate( cellLine = cellLines[i] ) %>%
+    dplyr::select( name, everything() )
+  
+  cssDataBackgroundA <- dplyr::bind_rows( datalist )
+  
+}
+
+
+# case 2 drugB - background drug, drugA - foreground drug
+datalist = list()
+for ( i in 1:length( cellLines ) ) {
+
+  datalist[[i]] <-
+    comboDrugBackgroundB %>%
+    filter( cellLine == cellLines[i] )%>%
+    group_by( backgroundDrug, backgroundDose, drug ) %>%
+    do( { get.curve.data(.) } ) %>%
+    ungroup() %>%
+    mutate( cellLine = cellLines[i] ) %>%
+    dplyr::select( name, everything() )
+  
+  cssDataBackgroundB <- dplyr::bind_rows( datalist )
+  
+}
+
+```
+
+
+---
+calculate CSS and save
+---
+
+```{r}
+
+cssData <- 
+  cssDataBackgroundA %>%
+  left_join( cssDataBackgroundB, by = c( "backgroundDrug" = "drug", "drug" = "backgroundDrug", "cellLine" = "cellLine" ), suffix = c( "DrugA", "DrugB" ) ) %>%
+  dplyr::select( contains( 'name' ), contains( 'sensitivity' ), everything() ) %>%
+  mutate( diff = abs( sensitivityScoreDrugA - sensitivityScoreDrugB ) ) %>%
+  filter( diff < 10 ) %>%
+  mutate( CSS =  ( sensitivityScoreDrugA + sensitivityScoreDrugB )/2 ) %>%
+  dplyr:: select( cellLine, backgroundDrug, drug, CSS ) %>%
+  dplyr::rename( drug1 = backgroundDrug, drug2 = drug )
+
+cssData$drug1 <- toupper( cssData$drug1 )
+cssData$drug2 <- toupper( cssData$drug2 )
+
+#save( cssData, file='css_data.RData')
+
+```
