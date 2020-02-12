@@ -1,6 +1,6 @@
 R scripts:
 
-1. calculate_sensitivity.Rmd
+1. calculate_sensitivity.R
  This is the last version of CSS calculation for drug combinations and sensitivity (relative inhibition - RI) calculation for single agents.
  Datasets, such as single_drug_data.RData and combo_drug_data.RData can be utilized to calculate those scores.
 
@@ -10,10 +10,10 @@ R scripts:
 RData files:
 
 1. single_drug_data.RData
- A file that can be used in calculate_sensitivity.Rmd to calculate relative inhibition (RI) for single drug experiments. The file has to contain such columns as cellLine, drug, dose and viability.
+ A file that can be used in calculate_sensitivity.R to calculate relative inhibition (RI) for single drug experiments. The file has to contain such columns as cellLine, drug, dose and viability.
 
 2. combo_drug_data.RData
-A file that can be used in  calculate_sensitivity.Rmd to calculate CSS for combination drug experiments. The file has to contain such columns as cellLine, drugA, drugAdose, drugB, drugBdose and viability. 
+A file that can be used in  calculate_sensitivity.R to calculate CSS for combination drug experiments. The file has to contain such columns as cellLine, drugA, drugAdose, drugB, drugBdose and viability. 
 
 3. fingerprints.RData
 A file that can be used in predicion_of_css.Rmd to build a matrix of features. It contains binary fingerprint data mapped to the drugs used in the experiment. It has to contain column  with drug names named ‘drug’.
