@@ -1,7 +1,8 @@
 R scripts:
 
-1. calculation_of_css.Rmd
- The script uses single_drug_data.RData and combo_drug_data.RData to calculate drug sensitivity scores (DSS) for single drugs and combination sensitivity scores (CSS) for drug combinations. The resulting CSS are saved to the css_data.RData file. 
+1. calculate_sensitivity.Rmd
+ This is the last version of CSS calculation for drug combinations and sensitivity (relative inhibition - RI) calculation for single agents.
+ Datasets, such as single_drug_data.RData and combo_drug_data.RData can be utilized to calculate those scores.
 
 2. predicion_of_css.Rmd
  The script predicts the CSS for drug combinations from css_data.RData using drug target information from fingerprints.RData, primary_targets.RData and primary_plus_sea_targets.RData, and machine learning methods (Elastic Net, Random Forests, Support Vector Machines). R2, RMSE, MAE and correlation values are calculated for a selected cell line and machine learning method.
@@ -9,10 +10,10 @@ R scripts:
 RData files:
 
 1. single_drug_data.RData
- A file that can be used in  calculation_of_css.Rmd to calculate DSS for single drug experiments. The file has to contain such columns as cellLine, drug, dose and viability. Column batchID is optional and it is possible to have multiple viability columns (replicates), but their names should start with ‘viability’.
+ A file that can be used in calculate_sensitivity.Rmd to calculate relative inhibition (RI) for single drug experiments. The file has to contain such columns as cellLine, drug, dose and viability.
 
 2. combo_drug_data.RData
-A file that can be used in  calculation_of_css.Rmd to calculate CSS for combination drug experiments. The file has to contain such columns as cellLine, drugA, drugAdose, drugB, drugBdose and viability. Column batchID is optional and it is possible to have multiple viability columns (replicates), but their names should start with ‘viability’.
+A file that can be used in  calculate_sensitivity.Rmd to calculate CSS for combination drug experiments. The file has to contain such columns as cellLine, drugA, drugAdose, drugB, drugBdose and viability. 
 
 3. fingerprints.RData
 A file that can be used in predicion_of_css.Rmd to build a matrix of features. It contains binary fingerprint data mapped to the drugs used in the experiment. It has to contain column  with drug names named ‘drug’.
